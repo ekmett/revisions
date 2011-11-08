@@ -1,0 +1,39 @@
+name:          revisions
+category:      Control, Monad, Concurrency, Parallelism
+version:       0.1
+license:       BSD3
+cabal-version: >= 1.10
+license-file:  LICENSE
+author:        Edward A. Kmett
+maintainer:    Edward A. Kmett <ekmett@gmail.com>
+stability:     experimental
+homepage:      http://github.com/ekmett/revisions/
+copyright:     Copyright (C) 2011 Edward A. Kmett
+synopsis:      A spark-based deterministic concurrent revision control monad
+description:   A spark-based deterministic concurrent revision control monad
+build-type:    Simple
+
+source-repository head
+  type: git
+  location: git://github.com/ekmett/revisions.git
+
+library
+  default-language: Haskell2010
+
+  other-extensions:
+    MagicHash,
+    UnboxedTuples,
+    BangPatterns,
+    Rank2Types
+
+  exposed-modules:
+    Control.Concurrent.Revision
+
+  ghc-options: -Wall
+
+  build-depends:
+    base     >= 4 && < 5,
+    hashable >= 1.1 && < 1.2,
+    ghc-prim >= 0.2 && < 0.4,
+    containers >= 0.4 && < 0.5,
+    concurrent-supply >= 0.1.1 && < 0.2
