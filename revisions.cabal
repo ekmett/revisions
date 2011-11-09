@@ -36,4 +36,5 @@ library
     hashable >= 1.1 && < 1.2,
     ghc-prim >= 0.2 && < 0.4,
     containers >= 0.4 && < 0.5,
-    concurrent-supply >= 0.1.1 && < 0.2
+    concurrent-supply >= 0.1.1 && < 0.2,
+    speculation >= 1.4 && < 1.5
