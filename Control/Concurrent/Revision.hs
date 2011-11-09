@@ -3,6 +3,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE GADTs #-}
 -- {-# LANGUAGE Trustworthy #-}
 module Control.Concurrent.Revision
   (
@@ -19,6 +20,7 @@ module Control.Concurrent.Revision
   , (=:), (+=), (*=), (-=), (//=), (%=)
   -- * Customized merging
   , vcreateM
+  , Merge(..)
   -- * Customized forking
   , vcreateMF
   , Fork(..)
@@ -33,27 +35,40 @@ import Data.Monoid (Monoid(..))
 import Control.Applicative
 import Control.Concurrent.Supply
 import GHC.IO (unsafeDupablePerformIO)
-import GHC.Prim (Any, par#)
+import GHC.Prim (par#)
 import Unsafe.Coerce (unsafeCoerce)
 import GHC.Types (Int(I#))
 
+data Merge a
+  = Merge (a -> a -> a -> a) -- 3 way merge
+  | JoineeMerge
+  | JoinerMerge
 
-vlookup :: Int -> IntMap Any -> Maybe a
-vlookup i m = unsafeCoerce (IntMap.lookup i m)
+data Write where
+  MergeWrite  :: (a -> a -> a -> a) -> a -> a -> Write -- 3 way merge, using the old op
+  JoineeWrite :: a -> Write -- the joinee wins
+  JoinerWrite :: a -> Write -- the joiner wins
+
+chainWrites :: Write -> Write -> Write
+chainWrites (MergeWrite a m _) (MergeWrite _ _ o) = MergeWrite a m (unsafeCoerce o)
+chainWrites a _ = a
+
+vlookup :: Int -> IntMap Write -> Maybe a
+vlookup i m = case IntMap.lookup i m of
+  Just (MergeWrite a _ _) -> Just (unsafeCoerce a)
+  Just (JoineeWrite a)    -> Just (unsafeCoerce a)
+  Just (JoinerWrite a)    -> Just (unsafeCoerce a)
+  Nothing                 -> Nothing
 {-# INLINE vlookup #-}
-
-vinsert :: Int -> a -> IntMap Any -> IntMap Any
-vinsert i a = IntMap.insert i (unsafeCoerce a)
-{-# INLINE vinsert #-}
 
 -- a basic block worth of actions, no fork, no joins
 data Seg = Seg
   { _reads  :: !IntSet
-  , _writes :: !(IntMap Any)
+  , _writes :: !(IntMap Write)
   }
 
 instance Monoid Seg where
-  Seg r w `mappend` Seg r' w' = Seg (IntSet.union (r IntSet.\\ IntMap.keysSet w') r') (IntMap.union w w')
+  Seg r w `mappend` Seg r' w' = Seg (IntSet.union (r IntSet.\\ IntMap.keysSet w') r') (IntMap.unionWith chainWrites w w')
   mempty = Seg mempty mempty
 
 type BranchId = Int
@@ -77,7 +92,9 @@ class Segmented t where
 
 instance Segmented Tree where
   summary (Tip _ s) = s
+  summary (Bin _ s _ _ _) = s
   branchId (Tip i _) = i
+  branchId (Bin i _ _ _ _) = i
 
 instance Segmented History where
   summary Nil = mempty
@@ -102,8 +119,6 @@ len (Cons l _ _ _ _ _ _) = l
 consT :: Weight -> Tree -> History -> History
 consT w t h = Cons (len h + w) w (branchId t) (summary t `mappend` summary h) (summary t) t h
 
-type Merges = IntMap (Any -> Any -> Any -> Any)
-
 keep :: Length -> History -> (# Summary, History #)
 keep l h
   | l == len h = (# mempty, h #)
@@ -111,7 +126,7 @@ keep l h
 
 -- keep a history of a given length, collecting a summary of what was skipped
 keep' :: Summary -> Length -> History -> (# Summary, History #)
-keep' acc n h@(Cons l w i _ ts t xs)
+keep' acc n h@(Cons l w _ _ ts t xs)
   | n == l    = (# acc, h #)
   | otherwise = case compare n (l - w) of
     GT -> keepT acc (n - l + w) w t xs
@@ -120,10 +135,8 @@ keep' acc n h@(Cons l w i _ ts t xs)
 keep' acc _ Nil = (# acc, Nil #)
 
 keepT :: Summary -> Length -> Weight -> Tree -> History -> (# Summary, History #)
-keepT acc n _ (Tip b s) h
-  | n > 0     = (# acc, consS b s h #)
-  | otherwise = (# mappend acc s, h #)
-keepTree acc n w (Bin b s a l r) h = case compare n w2 of
+keepT acc _ _ (Tip _ s) h = (# mappend acc s, h #) -- | n > 0 = (# acc, consS b s h #)
+keepT acc n w (Bin _ _ a l r) h = case compare n w2 of
     LT              -> keepT (acc `mappend` a `mappend` summary l) n w2 r h
     EQ              -> (# acc `mappend` a `mappend` summary l, consT w2 r h #)
     GT | n == w - 1 -> (# acc `mappend` a, consT w2 l (consT w2 r h) #)
@@ -131,11 +144,11 @@ keepTree acc n w (Bin b s a l r) h = case compare n w2 of
   where w2 = div w 2
 
 -- trim history to a common shape then search for the least common ancestor
-joinH :: Merges -> Seg -> History -> Seg -> History -> (# Seg, History #)
-joinH mm sl hl sr hr = case compare ll lr of
-  LT | (# r, hr' #) <- keep ll hr -> joinH' mm sl hl (sr `mappend` r) hr'
-  EQ -> joinH' mm sl hl sr hr
-  GT | (# l, hl' #) <- keep lr hl -> joinH' mm (sl `mappend` l) hl' sr hr
+joinH :: Seg -> History -> Seg -> History -> (# Seg, History #)
+joinH sl hl sr hr = case compare ll lr of
+  LT | (# r, hr' #) <- keep ll hr -> joinH' sl hl (sr `mappend` r) hr'
+  EQ -> joinH' sl hl sr hr
+  GT | (# l, hl' #) <- keep lr hl -> joinH' (sl `mappend` l) hl' sr hr
   where 
     ll = len hl
     lr = len hr
@@ -145,80 +158,80 @@ commonH Nil Nil = True
 commonH (Cons _ _ bl _ _ _ _) (Cons _ _ br _ _ _ _) = bl == br
 commonH _ _ = False -- crash?
 
-joinH' :: Merges -> Seg -> History -> Seg -> History -> (# Seg, History #)
-joinH' mm sl Nil sr Nil = joinS mm sl sr Nil
-joinH' mm sl h@(Cons ll w bl _ stl tl ls)
-          sr   (Cons lr _ br _ str tr rs)
-  | bl == br      = joinS mm sl sr h
-  | commonH ls rs = joinT w mm sl tl sr tr ls
-  | otherwise     = joinH' mm (sl `mappend` stl) ls (sr  `mappend` str) rs
+joinH' :: Seg -> History -> Seg -> History -> (# Seg, History #)
+joinH' sl Nil sr Nil = (# joinS sl sr,  Nil #)
+joinH' sl h@(Cons _ w bl _ stl tl ls)
+       sr   (Cons _ _ br _ str tr rs)
+  | bl == br      = (# joinS sl sr, h #)
+  | commonH ls rs = joinT w sl tl sr tr ls
+  | otherwise     = joinH' (sl `mappend` stl) ls (sr  `mappend` str) rs
+joinH' _ _ _ _ = error "joinH': misaligned History"
 
 commonT :: Tree -> Tree -> Bool
 commonT (Tip i _)       (Tip j _)       = i == j
 commonT (Bin i _ _ _ _) (Bin j _ _ _ _) = i == j
-commonT _ _ = False -- crash?
+commonT _ _ = error "commonT: misaligned History"
 
-joinT :: Weight -> Merges -> Seg -> Tree -> Seg -> Tree -> History -> (# Seg, History #)
-joinT _ mm al (Tip i l) ar (Tip j r) h
-  | i == j    = joinS mm (al `mappend` l) (ar `mappend` r) h
-  | otherwise = joinS mm al ar (consS i l h)
-joinT w mm al (Bin _ sl l ll lr) ar (Bin _ sr r rl rr) h
-  | commonT ll rl = joinS mm (al `mappend` summary ll `mappend` summary lr) (ar `mappend` summary rl `mappend` summary rr) h
-  | commonT lr rr = joinT w2 mm (al `mappend` l) ll (ar `mappend` r) rl (consT w2 lr h)
-  | otherwise     = joinT w2 mm (al `mappend` l `mappend` summary ll) lr (ar `mappend` r `mappend` summary rl) rr h
+joinT :: Weight -> Seg -> Tree -> Seg -> Tree -> History -> (# Seg, History #)
+joinT _ al (Tip i l) ar (Tip j r) h
+  | i == j    = (# joinS (al `mappend` l) (ar `mappend` r), h #)
+  | otherwise = (# joinS al ar, consS i l h #)
+joinT w al (Bin _ _ l ll lr) ar (Bin _ _ r rl rr) h
+  | commonT ll rl = (# joinS (al `mappend` summary ll `mappend` summary lr) (ar `mappend` summary rl `mappend` summary rr), h #)
+  | commonT lr rr = joinT w2 (al `mappend` l) ll (ar `mappend` r) rl (consT w2 lr h)
+  | otherwise     = joinT w2 (al `mappend` l `mappend` summary ll) lr (ar `mappend` r `mappend` summary rl) rr h
   where w2 = div w 2
+joinT _ _ _ _ _ _ = error "joinT: misaligned history"
 
-joinS :: Merges -> Seg -> Seg -> History -> (# Seg, History #)
-joinS mm l r h = (# joinS' mm l r h , h #)
-
-joinS' :: Merges -> Seg -> Seg -> History -> Seg
-joinS' mm (Seg rl wl) (Seg rr wr) h = Seg (IntSet.union rl rr) (IntMap.unionWithKey merge wl wr)
+joinS :: Seg -> Seg -> Seg
+joinS (Seg rl wl) (Seg rr wr) = Seg (IntSet.union rm (IntSet.union rl rr)) (IntMap.unionWith mergeWrites wl wr)
   where
-    merge k l r = case IntMap.lookup k mm of
-      Just merge -> undefined
-      Nothing -> undefined
-      -- TODO: finish
+    rm = IntMap.keysSet (IntMap.filter isMergeWrite (IntMap.intersection wl wr))
+    isMergeWrite (MergeWrite _ _ _) = True
+    isMergeWrite _ = False
+    mergeWrites (MergeWrite f l o) (MergeWrite _ r _) = MergeWrite f (f o l (unsafeCoerce r)) o
+    mergeWrites (JoinerWrite a) (JoinerWrite _) = JoinerWrite a
+    mergeWrites (JoineeWrite _) (JoineeWrite b) = JoineeWrite b
+    mergeWrites _ _ = error "joinS: inconsistent merge behavior"
 
-newtype Rev s a = Rev { unRev :: Supply -> Merges -> Seg -> History -> (# a, Supply, Merges, Seg, History #) }
+newtype Rev s a = Rev { unRev :: Supply -> Seg -> History -> (# a, Supply, Seg, History #) }
 
 runRev :: (forall s. Rev s a) -> a
-runRev (Rev g) = case g (unsafeDupablePerformIO newSupply) mempty mempty Nil of
-  (# a, _, _, _, _ #) -> a
+runRev (Rev g) = case g (unsafeDupablePerformIO newSupply) mempty Nil of
+  (# a, _, _, _ #) -> a
 
 instance Functor (Rev s) where
-  fmap f (Rev k) = Rev $ \s mm c h -> case k s mm c h of
-    (# a, s', mm', c', h' #) -> (# f a, s', mm', c', h' #)
+  fmap f (Rev k) = Rev $ \s c h -> case k s c h of
+    (# a, s', c', h' #) -> (# f a, s', c', h' #)
 
 instance Applicative (Rev s) where
-  pure a = Rev (# a,,,, #)
-  Rev mf <*> Rev ma = Rev $ \s mm c h -> case mf s mm c h of
-    (# f, s', mm', c', h' #) -> case ma s' mm' c' h' of
-       (# a, s'', mm'', c'', h'' #) -> (# f a, s'', mm'', c'', h'' #)
+  pure a = Rev (# a,,, #)
+  Rev mf <*> Rev ma = Rev $ \s c h -> case mf s c h of
+    (# f, s', c', h' #) -> case ma s' c' h' of
+       (# a, s'', c'', h'' #) -> (# f a, s'', c'', h'' #)
 
 instance Monad (Rev s) where
-  return a = Rev (# a,,,, #)
-  Rev g >>= f = Rev $ \s mm c h -> case g s mm c h of
-    (# a, s', mm', c', h' #) -> unRev (f a) s' mm' c' h'
+  return a = Rev (# a,,, #)
+  Rev g >>= f = Rev $ \s c h -> case g s c h of
+    (# a, s', c', h' #) -> unRev (f a) s' c' h'
 
-data Task s a = Task a !Supply !Merges !Seg !History
+data Task s a = Task a !Supply !Seg !History
 
 instance Functor (Task s) where
-  fmap f (Task a mm s c h) = Task (f a) mm s c h
+  fmap f (Task a s c h) = Task (f a) s c h
 
 fork :: Rev s a -> Rev s (Task s a)
-fork (Rev g) = Rev $ \s mm c h -> case freshId# s of
+fork (Rev g) = Rev $ \s c h -> case freshId# s of
   (# i, s' #) -> case splitSupply# s' of
     (# sl, sr #) -> let
         !h' = consS (I# i) c h
-        t = case g sr mm mempty h' of
-              (# a, sr', mm', c', h'' #) -> Task a sr' mm' c' h''
-      in case par# t of _ -> (# t, sl, mm, mempty, h' #)
+        t = case g sr mempty h' of
+              (# a, sr', c', h'' #) -> Task a sr' c' h''
+      in case par# t of _ -> (# t, sl, mempty, h' #)
 
 join :: Task s a -> Rev s a
-join (Task a s' mm' c' h') = Rev $ \s mm c h ->
-   let !mm'' = IntMap.union mm mm'
-   in case joinH mm'' c h c' h' of
-     (# c'', h'' #) -> (# a, s, mm'', c'', h'' #)
+join (Task a _ c' h') = Rev $ \s c h -> case joinH c h c' h' of
+  (# c'', h'' #) -> (# a, s, c'', h'' #)
 
 -- we hold the merge, reinitializer and INITIAL value in the versioned variables themselves
 -- this way any variable disposed of after initialization but without being written to
@@ -229,39 +242,48 @@ data Fork a
   | BlindFork a
 
 -- TODO: change the way the merge and fork functions work so we can know whether or not we use the old values
-data Versioned s a = Versioned {-# UNPACK #-} !Int a (Fork a)
+data Versioned s a = Versioned {-# UNPACK #-} !Int (Merge a) (Fork a) a
 
-vcreateMF :: Maybe (a -> a -> a -> a) -> Fork a -> a -> Rev s (Versioned s a)
-vcreateMF om f a = Rev $ \s mm c h -> case freshId# s of
-  (# i#, s' #) | i <- I# i# -> case om of
-     Just m | !mm' <- IntMap.insert i (unsafeCoerce m) mm -> (# Versioned i a f, s', mm', c, h #)
-     Nothing                                              -> (# Versioned i a f, s', mm,  c, h #)
+vcreateMF :: Merge a -> Fork a -> a -> Rev s (Versioned s a)
+vcreateMF m f a = Rev $ \s c h -> case freshId# s of
+  (# i, s' #) -> (# Versioned (I# i) m f a, s', c, h #)
 
-vcreateM :: (a -> a -> a -> a) -> a -> Rev s (Versioned s a)
-vcreateM m a = vcreateMF (Just m) (Fork id) a
+vcreateM :: Merge a -> a -> Rev s (Versioned s a)
+vcreateM m a = vcreateMF m (Fork id) a
 {-# INLINE vcreateM #-}
 
 vcreate :: a -> Rev s (Versioned s a)
-vcreate a = vcreateMF Nothing (Fork id) a
+vcreate a = vcreateMF JoineeMerge (Fork id) a
 {-# INLINE vcreate #-}
 
 vread :: Versioned s a -> Rev s a
-vread (Versioned i a f) = Rev $ \s mm c@(Seg r w) h -> case vlookup i w of
-  Just b -> (# b, s, mm, c, h #)
+vread (Versioned i _ f a) = Rev $ \s c@(Seg r w) h -> case vlookup i w of
+  Just b -> (# b, s, c, h #)
   Nothing -> case h of
     Cons _ _ b (Seg _ w') _ _ _ | b > i -> case f of
-      BlindFork bf -> (# bf, s, mm, c, h #)
-      Fork ff      -> let !c' = Seg (IntSet.insert i r) w in (# ff $ fromMaybe a $ vlookup i w', s, mm, c', h #)
-    _ -> let !c' = Seg (IntSet.insert i r) w in (# a, s, mm, c', h #)
+      BlindFork bf -> (# bf, s, c, h #)
+      Fork ff | !c' <- Seg (IntSet.insert i r) w -> (# ff $ fromMaybe a $ vlookup i w', s, c', h #)
+    _ | !c' <- Seg (IntSet.insert i r) w -> (# a, s, c', h #)
 
-(=:) :: Versioned s a -> a -> Rev s ()
-Versioned i _ _ =: a = Rev $ \s mm (Seg r w) h -> (# (), s, mm, Seg r (vinsert i a w), h #)
+vmodify :: Versioned s a -> (a -> (# Maybe a, b #)) -> Rev s b
+vmodify = undefined
+{-
+vmodify (Versioned i m f a) k = Rev $ \s c@Seg r w) h -> case vlookup i w of
+  Just a -> case k a of
+    (# Nothing, b #) -> (# b, s, c, h #)
+    (# Just a', b #) | !s' <- vinsert m a' a s -> (# b, s', c, h #)
+vmodify (Versioned i a m f) k :: Versioned s a -> a -> Rev s ()
+v@(Versioned i a (Merge m) f) =: a = do
+  <- vread
+Versioned i a JoineeMerge _ =: a = Rev $ \s (Seg r w) h -> (# (), s, Seg r (vinsert i a w), h #)
 {-# INLINE (=:) #-}
+-}
+(=:) :: Versioned s a -> a -> Rev s ()
+(=:) = undefined
 
 (%=) :: Versioned s a -> (a -> a) -> Rev s ()
-v %= f = do
-  x <- vread v
-  v =: f x
+v %= f = vmodify v $ \a -> (# Just (f a), () #)
+{-# INLINE (%=) #-}
 
 (+=) :: Num a => Versioned s a -> a -> Rev s ()
 (-=) :: Num a => Versioned s a -> a -> Rev s ()
