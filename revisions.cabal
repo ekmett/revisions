@@ -9,8 +9,8 @@ maintainer:    Edward A. Kmett <ekmett@gmail.com>
 stability:     experimental
 homepage:      http://github.com/ekmett/revisions/
 copyright:     Copyright (C) 2011 Edward A. Kmett
-synopsis:      A spark-based deterministic concurrent revision control monad
-description:   A spark-based deterministic concurrent revision control monad
+synopsis:      Deterministic concurrent revision control
+description:   Deterministic concurrent revision control
 build-type:    Simple
 
 source-repository head
@@ -29,12 +29,16 @@ library
   exposed-modules:
     Control.Concurrent.Revision
 
-  ghc-options: -Wall
+  ghc-options: -Wall -O2 -fspec-constr
 
   build-depends:
-    base     >= 4 && < 5,
-    hashable >= 1.1 && < 1.2,
-    ghc-prim >= 0.2 && < 0.4,
-    containers >= 0.4 && < 0.5,
-    concurrent-supply >= 0.1.1 && < 0.2,
-    speculation >= 1.4 && < 1.5
+    base              >= 4       && < 5,
+    containers        >= 0.4     && < 0.5,
+    concurrent-supply >= 0.1.1   && < 0.2,
+    data-default      >= 0.3     && < 0.4,
+    hashable          >= 1.1     && < 1.2,
+    ghc-prim          >= 0.2     && < 0.4,
+    ref-tf            >= 0.3.0.1 && < 0.4,
+    mtl               >= 2.0.1   && < 2.1,
+    speculation       >= 1.4     && < 1.5,
+    transformers      >= 0.2.2   && < 0.3
