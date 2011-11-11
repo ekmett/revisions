@@ -173,23 +173,31 @@ version o a = Rev $ \k _ s r w d -> case freshId# s of
 instance Error e => MonadRef (Rev e s) where
   type Ref (Rev e s) = Versioned s
   newRef = version def
-  readRef (Versioned i d o a) = Rev $ \k _ s r w dh h -> case vlookup i w of
-    Just b -> k b s r w dh h
-    Nothing
-      | dh <= d -> k a s r w dh h
-      | otherwise -> case forking o of
-        BlindFork b -> k b s r w dh h
-        Fork ff     -> k (ff $ fromMaybe a $ vlookup i $ writes $ summary h) s (IntSet.insert i r) w dh h
-  writeRef (Versioned i d o a) x = Rev $ \k _ s r w dh h -> case merging o of
-    JoineeMerge -> k () s r (IntMap.insert i (JoineeWrite x) w) dh h
-    JoinerMerge -> k () s r (IntMap.insert i (JoinerWrite x) w) dh h
-    Merge m -> case vlookup i w of
-      Just b -> k () s r (IntMap.insert i (MergeWrite m x b) w) dh h
+  readRef (Versioned i d o a) = case forking o of
+    BlindFork b -> Rev $ \k _ s r w dh -> k (fromMaybe (if dh <= d then a else b) (vlookup i w)) s r w dh
+    Fork ff     -> Rev $ \k _ s r w dh h -> case vlookup i w of
+      Just b  -> k b s r w dh h
       Nothing
-        | dh <= d   -> k () s r (IntMap.insert i (MergeWrite m x a) w) dh h
-        | otherwise -> k () s r (IntMap.insert i (MergeWrite m x (case forking o of
-          BlindFork b -> b
-          Fork ff     -> ff $ fromMaybe a $ vlookup i $ writes $ summary h)) w) dh h
+        | dh <= d   -> k (ff $ fromMaybe a $ vlookup i $ writes $ summary h) s (IntSet.insert i r) w dh h -- fork the var
+        | otherwise -> k a s r w dh h -- fresh
+  writeRef (Versioned i d (VersionDef md fd _) a) x = case md of
+    JoineeMerge -> Rev $ \k _ s r w -> k () s r (IntMap.insert i (JoineeWrite x) w)
+    JoinerMerge -> Rev $ \k _ s r w -> k () s r (IntMap.insert i (JoinerWrite x) w)
+    Merge m -> case fd of
+      Fork ff -> Rev $ \k _ s r w dh h ->
+        let k' b = k () s r (IntMap.insert i (MergeWrite m x b) w) dh h
+        in case vlookup i w of
+          Just b -> k' b
+          Nothing
+            | dh <= d                   -> k' a
+            | !wh <- writes (summary h) -> k' (ff (fromMaybe a (vlookup i wh))) -- actual lookup is lazy as we may not need it
+      BlindFork b -> Rev $ \k _ s r w dh ->
+        let k' y = k () s r (IntMap.insert i (MergeWrite m x y) w) dh
+        in case vlookup i w of
+          Nothing | dh <= d   -> k' a -- recent, but not yet written to
+                  | otherwise -> k' b -- older, but not written to, so fork blindly
+          Just c              -> k' c -- recently written to, retain current value
+
   modifyRef v f = do
     a <- readRef v
     writeRef v (f a)

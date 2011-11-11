@@ -29,7 +29,7 @@ library
   exposed-modules:
     Control.Concurrent.Revision
 
-  ghc-options: -Wall -O2 -fspec-constr
+  ghc-options: -Wall -O2 -fspec-constr -fdicts-cheap
 
   build-depends:
     base              >= 4       && < 5,
