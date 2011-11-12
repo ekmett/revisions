@@ -110,13 +110,6 @@ instance Error e => MonadSpec (Rev e s) where
   specByM  f g a = Rev (\k _ s r w d h -> specBy  f g (\ga -> k ga s r w d h) a)
   specByM' f g a = Rev (\k _ s r w d h -> specBy' f g (\ga -> k ga s r w d h) a)
 
-data RevTask e s a
-  = Task a !Supply !IntSet !(IntMap Write) {-# UNPACK #-} !Depth !History
-  | FailedTask e
-
-instance Functor (RevTask e s) where
-  fmap f (Task a s r w d h) = Task (f a) s r w d h
-  fmap _ (FailedTask e) = FailedTask e
 
 instance Error e => MonadRef (Rev e s) where
   type Ref (Rev e s) = Versioned s
@@ -129,8 +122,8 @@ instance Error e => MonadRef (Rev e s) where
     Fork ff     -> Rev $ \k _ s r w dh h -> case vlookup i w of
       Just b  -> k b s r w dh h
       Nothing
-        | dh > d    -> k (ff $ fromMaybe a $ vlookup i $ writes $ summary h) s (IntSet.insert i r) w dh h -- fork the var
-        | otherwise -> k a s r w dh h -- fresh
+        | dh > d    -> k (ff $ fromMaybe a $ vlookup i $ writes $ summary h) s (IntSet.insert i r) w dh h
+        | otherwise -> k a s r w dh h
   {-# INLINE readRef #-}
 
   writeRef (Versioned i d (VersionDef md _ _) a) x = case md of
@@ -156,19 +149,28 @@ instance Error e => MonadAtomicRef (Rev e s) where
     return c
   {-# INLINE atomicModifyRef #-}
 
+data RevTask e s a
+  = Task a !IntSet !(IntMap Write) {-# UNPACK #-} !Depth !History
+  | FailedTask e
+
+instance Functor (RevTask e s) where
+  fmap f (Task a r w d h) = Task (f a) r w d h
+  fmap _ (FailedTask e) = FailedTask e
+
 instance Error e => MonadTask (Rev e s) where
   type Task (Rev e s) = RevTask e s
+
   fork (Rev g) = Rev $ \k _ s r w d h -> case freshId s of
     (i, s') 
       | h' <- consS i (Segment r w) h
       , d' <- d + 1
       , (sl, sr) <- splitSupply s' -> pseq h' $ pseq d' $
-        let t = g Task FailedTask sr mempty mempty d' h' in
+        let t = g (\a _ -> Task a) FailedTask sr mempty mempty d' h' in
         t `par` k t sl mempty mempty d' h'
   {-# INLINE fork #-}
 
   join (FailedTask e) = Rev $ \_ kf _ _ _ _ _ -> kf e
-  join (Task a _ r' w' d' h') = Rev $ \ k _ s r w d h -> case freshId s of
+  join (Task a r' w' d' h') = Rev $ \ k _ s r w d h -> case freshId s of
     ( i, s' ) ->
       k a s' mempty mempty (max d d' + 1) $ joinH (Segment r w) h (Segment r' w') h' (consS i)
   {-# INLINE join #-}
@@ -236,7 +238,8 @@ data Tree
   = Bin {-# UNPACK #-} !Branch {-# UNPACK #-} !Summary {-# UNPACK #-} !Segment !Tree !Tree
   | Tip {-# UNPACK #-} !Branch {-# UNPACK #-} !Segment
 
--- | A skew binomial random access list of segments with summaries
+-- | A skew binary random access list of segments with summaries
+-- TODO: bootstrap history as part of defining recording?
 data History
   = Cons {-# UNPACK #-} !Length {-# UNPACK #-} !Weight {-# UNPACK #-} !Branch {-# UNPACK #-} !Summary !Summary !Tree !History
   | Nil

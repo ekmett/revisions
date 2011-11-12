@@ -27,15 +27,15 @@ library
     Rank2Types
 
   exposed-modules:
-    Control.Monad.Ref.Sugar
     Control.Concurrent.Revision
-    Control.Concurrent.Revision.Monad
-    Control.Concurrent.Revision.Merge
-    Control.Concurrent.Revision.Task
     Control.Concurrent.Revision.Class
+    Control.Concurrent.Revision.Merge
+    Control.Concurrent.Revision.Monad
+    Control.Concurrent.Revision.Record
+    Control.Concurrent.Revision.Task
+    Control.Monad.Ref.Sugar
 
-  other-modules:
-    Data.IVar.Simple
+-- other-modules: Data.IVar.Simple
 
   ghc-options: -Wall -O2 -fspec-constr -fdicts-cheap
 
@@ -50,4 +50,5 @@ library
     ref-tf            >= 0.3.0.1 && < 0.4,
     semigroups        >= 0.8     && < 0.9,
     speculation       >= 1.4     && < 1.5,
+    stm               >= 2.2     && < 2.3,
     transformers      >= 0.2.2   && < 0.3

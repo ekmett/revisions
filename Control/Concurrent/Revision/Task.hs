@@ -1,13 +1,7 @@
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MagicHash #-}
-{-# LANGUAGE UnboxedTuples #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GADTs #-}
-
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Control.Concurrent.Revision.Task
@@ -18,16 +12,12 @@
 -- Stability   :  provisional
 -- Portability :  type families, GADTs, unboxed tuples, rank-2 types
 --
--- A spark-based deterministic fork/join computation monad with
--- revision-controlled variables.
+-- Forking and joining computations in transformers
 ----------------------------------------------------------------------------
 module Control.Concurrent.Revision.Task
   ( MonadTask(..)
   ) where
 
-import Control.Concurrent
-import Control.Exception as Exception
-import Control.Monad (liftM)
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.List
 import Control.Monad.Trans.State.Strict as Strict
@@ -39,8 +29,14 @@ import Control.Monad.Trans.RWS.Lazy as Lazy
 import Control.Monad.Trans.Error
 import Control.Monad.Trans.Class
 import Data.Semigroup
+
+-- IO Task
+{-
+import Control.Concurrent
+import Control.Exception as Exception
 import Data.IVar.Simple (IVar)
 import qualified Data.IVar.Simple as IVar
+-}
 
 class Monad m => MonadTask m where
   type Task m :: * -> *
@@ -114,9 +110,7 @@ instance (MonadTask m, Monoid w) => MonadTask (Lazy.WriterT w m) where
     return (WriterTask t, mempty)
   join (WriterTask t) = Lazy.WriterT $ join t
 
-
 newtype RWSTask w s m a = RWSTask (Task m (a, s, w))
-
 instance (MonadTask m, Semigroup s, Monoid w) => MonadTask (Strict.RWST r w s m) where
   type Task (Strict.RWST r w s m) = RWSTask w s m
   fork (Strict.RWST m) = Strict.RWST $ \ r s -> do
@@ -136,7 +130,6 @@ instance (MonadTask m, Semigroup s, Monoid w) => MonadTask (Lazy.RWST r w s m) w
     return (a, mainState <> forkState, w)
 
 newtype ListTask m a = ListTask (Task m [a])
-
 -- | Subject to the usual caveats about ListT being not quite a monad transformer
 instance MonadTask m => MonadTask (ListT m) where
   type Task (ListT m) = ListTask m
@@ -145,8 +138,9 @@ instance MonadTask m => MonadTask (ListT m) where
     return [ListTask t]
   join (ListTask t) = ListT $ join t
 
--- we do not currently provide a nice way to throw away the tasks that we backgrounded, so be careful
+{-
 data IOTask a = IOTask {-# UNPACK #-} !ThreadId {-# UNPACK #-} !(IVar (Either SomeException a))
+-- | We do not currently provide a way to throw away the tasks that we backgrounded, so be careful
 instance MonadTask IO where
   type Task IO = IOTask
   fork m = do
@@ -158,3 +152,4 @@ instance MonadTask IO where
   join (IOTask _ v) = case IVar.read v of
     Left e  -> Exception.throw e
     Right a -> return a
+-}
