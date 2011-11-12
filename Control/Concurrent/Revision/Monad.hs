@@ -110,7 +110,6 @@ instance Error e => MonadSpec (Rev e s) where
   specByM  f g a = Rev (\k _ s r w d h -> specBy  f g (\ga -> k ga s r w d h) a)
   specByM' f g a = Rev (\k _ s r w d h -> specBy' f g (\ga -> k ga s r w d h) a)
 
-
 instance Error e => MonadRef (Rev e s) where
   type Ref (Rev e s) = Versioned s
 
@@ -177,8 +176,7 @@ instance Error e => MonadTask (Rev e s) where
 
 -- | A revision-controlled variable
 --
--- NB: Most of the operations on Versioned come from 'MonadRef'.
-
+-- NB: Most of the operations on Versioned come from 'MonadRef', 'MonadAtomicRef' and 'MonadRev'
 data Versioned s a = Versioned {-# UNPACK #-} !Int {-# UNPACK #-} !Depth {-# UNPACK #-} !(VersionDef a) a
 
 instance Eq (Versioned s a) where
@@ -278,13 +276,14 @@ consT :: Weight -> Tree -> History -> History
 consT w t h = Cons (len h + w) w (branchId t) (summary t <> summary h) (summary t) t h
 {-# INLINE consT #-}
 
+-- Implementation of join
+
 keep :: Length -> History -> (Summary -> History -> r) -> r
 keep l h k
   | l == len h = k mempty h
   | otherwise  = keep' mempty l h k
 {-# INLINE keep #-}
 
--- keep a history of a given length, collecting a summary of what was skipped
 keep' :: Summary -> Length -> History -> (Summary -> History -> r) -> r
 keep' acc n h@(Cons l w _ _ ts t xs) k
   | n == l    = k acc h
