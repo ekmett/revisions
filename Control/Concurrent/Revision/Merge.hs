@@ -1,13 +1,12 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE GADTs #-}
-
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Control.Concurrent.Revision.Merge
@@ -18,8 +17,6 @@
 -- Stability   :  provisional
 -- Portability :  type families, GADTs, unboxed tuples, rank-2 types
 --
--- A spark-based deterministic fork/join computation monad with
--- revision-controlled variables.
 ----------------------------------------------------------------------------
 module Control.Concurrent.Revision.Merge
   ( MergeStrategy(..)

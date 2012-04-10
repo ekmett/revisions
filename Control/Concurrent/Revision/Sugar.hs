@@ -1,7 +1,7 @@
 {-# LANGUAGE TypeFamilies #-}
 -----------------------------------------------------------------------------
 -- |
--- Module      :  Control.Monad.Ref.Sugar
+-- Module      :  Control.Concurrent.Revision.Sugar
 -- Copyright   :  (C) 2011 Edward Kmett,
 -- License     :  BSD-style (see the file LICENSE)
 --
@@ -10,27 +10,27 @@
 -- Portability :  type families
 --
 ----------------------------------------------------------------------------
-module Control.Monad.Ref.Sugar
+module Control.Concurrent.Revision.Sugar
   ( (=:)
   , (%=)
   , (+=) , (*=) , (-=)
   , (//=)
   ) where
 
-import Control.Monad.Ref
+import Control.Concurrent.Revision.Monad
 
-(=:) :: MonadRef m => Ref m a -> a -> m ()
-(=:) = writeRef
+(=:) :: MonadRev m => Ver m a -> a -> m ()
+(=:) = writeVer
 {-# INLINE (=:) #-}
 
-(%=) :: MonadRef m => Ref m a -> (a -> a) -> m ()
-(%=) = modifyRef
+(%=) :: MonadRev m => Ver m a -> (a -> a) -> m ()
+(%=) = modifyVer
 {-# INLINE (%=) #-}
 
-(+=),(-=),(*=) :: (MonadRef m, Num a) => Ref m a -> a -> m ()
+(+=),(-=),(*=) :: (MonadRef m, Num a) => Ver m a -> a -> m ()
 v += b = v %= (b +)
 v -= b = v %= (b -)
 v *= b = v %= (b *)
 
-(//=) :: (MonadRef m, Fractional a) => Ref m a -> a -> m ()
+(//=) :: (MonadRef m, Fractional a) => Ver m a -> a -> m ()
 v //= b = v %= (b /)

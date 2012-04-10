@@ -27,13 +27,12 @@ library
     Rank2Types
 
   exposed-modules:
-    Control.Concurrent.Revision
     Control.Concurrent.Revision.Class
     Control.Concurrent.Revision.Merge
     Control.Concurrent.Revision.Monad
     Control.Concurrent.Revision.Record
     Control.Concurrent.Revision.Task
-    Control.Monad.Ref.Sugar
+    Control.Concurrent.Revision.Sugar
 
 -- other-modules: Data.IVar.Simple
 

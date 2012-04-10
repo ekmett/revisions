@@ -24,7 +24,10 @@
 module Control.Concurrent.Revision.Monad
   (
   -- * Version Control
-    Rev
+    RevT
+  , runRevT
+  , runRevTWith
+  , Rev
   , runRev
   , runRevWith
   ) where
@@ -55,52 +58,48 @@ infixr 5 <>
 (<>) :: Monoid m => m -> m -> m
 (<>) = mappend
 
+data FJ (m :: * -> *) = FJ
+
 -- | The revision control monad.
 -- @Rev e s a@ represents a computation that will yield a result @a@ or fail with an error of type @e@. The @s@ 
--- is used in an ST-like fashion to keep us from entangling our versioned variables.
-newtype Rev e s a = Rev { unrev :: forall r.
-  (a -> Supply -> IntSet -> IntMap Write -> Depth -> History -> r) ->
-  (e -> r) ->
-  Supply -> IntSet -> IntMap Write -> Depth -> History -> r }
+-- is used in an ST-like fashion to keep us from entangling our ver variables.
+newtype RevT s m a = RevT { unrev :: forall r.
+          (a -> Supply -> IntSet -> IntMap Write -> Depth -> History -> m r) ->
+  FJ m -> Supply -> IntSet -> IntMap Write -> Depth -> History -> m r
+  }
 
--- | Run a revision controlled fork/join computation, ultimately invoking 'error' for any error that occurs.
---
--- The resulting error is deterministically chosen if caused by 'fail', 'empty', 'mzero' or 'throwError'.
---
--- > runRev = runRevWith error
-runRev :: (forall s. Rev String s a) -> a
-runRev = runRevWith error
+askForkJoinPolicy :: RevT s m (ForkJoin m)
+askForkJoinPolicy = RevT id
+
+type Rev s = RevT s Identity
+
+runRev :: (forall s. Rev s a) -> a
+runRev m = runIdentity (runRevT m)
 {-# INLINE runRev #-}
 
--- | Run a revision controlled fork/join computation with a user supplied error handler. 
---
--- The resulting error is deterministically chosen if caused by 'fail', 'empty', 'mzero' or 'throwError'.
-runRevWith :: (e -> a) -> (forall s. Rev e s a) -> a
-runRevWith err (Rev g)
-  = g (\a _ _ _ _ _ -> a) err
-      (unsafeDupablePerformIO newSupply)
-      mempty mempty 0 Nil
-{-# INLINE runRevWith #-}
+runRevT ::: MonadTask m => (forall s. RevT s m a) -> m a
+runRevT (Rev g) = g (\a _ _ _ _ _ -> a) FJ (unsafeDupablePerformIO newSupply) mempty mempty 0 Nil
+{-# INLINE runRevT #-}
 
 instance Functor (Rev e s) where
-  fmap f (Rev m) = Rev $ \k kf -> m (k . f) kf
+  fmap f (Rev m) = Rev $ \k fj -> m (k . f) fj
 
 instance Applicative (Rev e s) where
   pure a = Rev $ \k _ -> k a
-  Rev mf <*> Rev ma = Rev $ \k kf -> mf (\f -> ma (\a -> k (f a)) kf) kf
+  Rev mf <*> Rev ma = Rev $ \k fj -> mf (\f -> ma (\a -> k (f a)) fj) fj
 
 instance Error e => Alternative (Rev e s) where
-  empty = Rev $ \_ kf _ _ _ _ _ -> kf noMsg
-  Rev m <|> Rev n = Rev $ \ks kf s r w d h -> m ks (\_ -> n ks kf s r w d h) s r w d h
+  empty = Rev $ \_ fj _ _ _ _ _ -> fj noMsg
+  Rev m <|> Rev n = Rev $ \ks fj s r w d h -> m ks (\_ -> n ks fj s r w d h) s r w d h
 
 instance Error e => Monad (Rev e s) where
   return a = Rev $ \k _ -> k a
-  Rev m >>= f = Rev $ \k kf -> m (\a -> unrev (f a) k kf) kf
-  fail s = Rev $ \_ kf _ _ _ _ _ -> kf (strMsg s)
+  Rev m >>= f = Rev $ \k fj -> m (\a -> unrev (f a) k fj) fj
+  fail s = Rev $ \_ fj _ _ _ _ _ -> fj (strMsg s)
 
 instance Error e => MonadError e (Rev e s) where
-  throwError e = Rev $ \_ kf _ _ _ _ _ -> kf e
-  catchError (Rev m) f = Rev $ \ks kf s r w d h -> m ks (\e -> unrev (f e) ks kf s r w d h) s r w d h
+  throwError e = Rev $ \_ fj _ _ _ _ _ -> fj e
+  catchError (Rev m) f = Rev $ \ks fj s r w d h -> m ks (\e -> unrev (f e) ks fj s r w d h) s r w d h
 
 instance Error e => MonadPlus (Rev e s) where
   mzero = empty
@@ -111,34 +110,6 @@ instance Error e => MonadSpec (Rev e s) where
   specByM' f g a = Rev (\k _ s r w d h -> specBy' f g (\ga -> k ga s r w d h) a)
 
 instance Error e => MonadRef (Rev e s) where
-  type Ref (Rev e s) = Versioned s
-
-  newRef = versioned def
-  {-# INLINE newRef #-}
-
-  readRef (Versioned i d (VersionDef _ fd _) a) = case fd of
-    BlindFork b -> Rev $ \k _ s r w dh -> k (fromMaybe (if dh <= d then a else b) (vlookup i w)) s r w dh
-    Fork ff     -> Rev $ \k _ s r w dh h -> case vlookup i w of
-      Just b  -> k b s r w dh h
-      Nothing
-        | dh > d    -> k (ff $ fromMaybe a $ vlookup i $ writes $ summary h) s (IntSet.insert i r) w dh h
-        | otherwise -> k a s r w dh h
-  {-# INLINE readRef #-}
-
-  writeRef (Versioned i d (VersionDef md _ _) a) x = case md of
-    Merge2 m   -> Rev $ \k _ s r w -> k () s r (IntMap.insert i (Write2 m x) w)
-    Merge3 m -> Rev $ \k _ s r w dh h ->
-        let k' y = k () s r (IntMap.insert i (Write3 m x y) w) dh h
-        in case vlookup i w of
-          Just b -> k' b
-          Nothing | dh <= d                   -> k' a
-                  | !wh <- writes (summary h) -> k' (fromMaybe a (vlookup i wh))
-  {-# INLINE writeRef #-}
-
-  modifyRef v f = do
-    a <- readRef v
-    writeRef v (f a)
-  {-# INLINE modifyRef #-}
 
 instance Error e => MonadAtomicRef (Rev e s) where
   atomicModifyRef v f = do
@@ -150,25 +121,22 @@ instance Error e => MonadAtomicRef (Rev e s) where
 
 data RevTask e s a
   = Task a !IntSet !(IntMap Write) {-# UNPACK #-} !Depth !History
-  | FailedTask e
 
 instance Functor (RevTask e s) where
   fmap f (Task a r w d h) = Task (f a) r w d h
-  fmap _ (FailedTask e) = FailedTask e
 
 instance Error e => MonadTask (Rev e s) where
   type Task (Rev e s) = RevTask e s
 
-  fork (Rev g) = Rev $ \k _ s r w d h -> case freshId s of
+  fork (Rev g) = Rev $ \k fj s r w d h -> case freshId s of
     (i, s') 
       | h' <- consS i (Segment r w) h
       , d' <- d + 1
       , (sl, sr) <- splitSupply s' -> pseq h' $ pseq d' $
-        let t = g (\a _ -> Task a) FailedTask sr mempty mempty d' h' in
-        t `par` k t sl mempty mempty d' h'
+        let t = g (\a _ -> Task a) fj sr mempty mempty d' h' in
+        t `par` k t fj sl mempty mempty d' h'
   {-# INLINE fork #-}
 
-  join (FailedTask e) = Rev $ \_ kf _ _ _ _ _ -> kf e
   join (Task a r' w' d' h') = Rev $ \ k _ s r w d h -> case freshId s of
     ( i, s' ) ->
       k a s' mempty mempty (max d d' + 1) $ joinH (Segment r w) h (Segment r' w') h' (consS i)
@@ -176,19 +144,44 @@ instance Error e => MonadTask (Rev e s) where
 
 -- | A revision-controlled variable
 --
--- NB: Most of the operations on Versioned come from 'MonadRef', 'MonadAtomicRef' and 'MonadRev'
-data Versioned s a = Versioned {-# UNPACK #-} !Int {-# UNPACK #-} !Depth {-# UNPACK #-} !(VersionDef a) a
+-- NB: Most of the operations on Ver come from 'MonadRef', 'MonadAtomicRef' and 'MonadRev'
+data Versioned s a = Ver {-# UNPACK #-} !Int {-# UNPACK #-} !Depth {-# UNPACK #-} !(VerDef a) a
 
-instance Eq (Versioned s a) where
-  Versioned i _ _ _ == Versioned j _ _ _ = i == j
+instance Eq (Ver s a) where
+  Ver i _ _ _ == Ver j _ _ _ = i == j
 
-instance Hashable (Versioned s a) where
-  hashWithSalt s (Versioned i _ _ _) = hashWithSalt s i
+instance Hashable (Ver s a) where
+  hashWithSalt s (Ver i _ _ _) = hashWithSalt s i
 
 instance Error e => MonadRev (Rev e s) where
-  versioned o a = Rev $ \k _ s r w d -> case freshId s of
-    (i, s') -> k (Versioned i d o a) s' r w d
-  {-# INLINE versioned #-}
+  type Ver (Rev e s) = Versioned s
+  ver o a = Rev $ \k _ s r w d -> case freshId s of
+    (i, s') -> k (Ver i d o a) s' r w d
+  {-# INLINE ver #-}
+
+  readVer (Ver i d (VerDef _ fd _) a) = case fd of
+    BlindFork b -> Rev $ \k _ s r w dh -> k (fromMaybe (if dh <= d then a else b) (vlookup i w)) s r w dh
+    Fork ff     -> Rev $ \k _ s r w dh h -> case vlookup i w of
+      Just b  -> k b s r w dh h
+      Nothing
+        | dh > d    -> k (ff $ fromMaybe a $ vlookup i $ writes $ summary h) s (IntSet.insert i r) w dh h
+        | otherwise -> k a s r w dh h
+  {-# INLINE readVer #-}
+
+  writeVer (Ver i d (VerDef md _ _) a) x = case md of
+    Merge2 m   -> Rev $ \k _ s r w -> k () s r (IntMap.insert i (Write2 m x) w)
+    Merge3 m -> Rev $ \k _ s r w dh h ->
+        let k' y = k () s r (IntMap.insert i (Write3 m x y) w) dh h
+        in case vlookup i w of
+          Just b -> k' b
+          Nothing | dh <= d                   -> k' a
+                  | !wh <- writes (summary h) -> k' (fromMaybe a (vlookup i wh))
+  {-# INLINE writeVer #-}
+
+  modifyVer v f = do
+    a <- readRef v
+    writeRef v (f a)
+  {-# INLINE modifyVer #-}
 
 -- internal
 vlookup :: Int -> IntMap Write -> Maybe a
@@ -350,4 +343,4 @@ joinS (Segment rl wl) (Segment rr wr) = Segment (IntSet.union rm $ IntSet.union 
     rm = IntMap.keysSet $ IntMap.filter threeWay $ IntMap.intersection wl wr
     mergeWrites (Write3 f l o) (Write3 _ r _) = Write3 f (f o l (unsafeCoerce r)) o
     mergeWrites (Write2 f a)   (Write2 _ b)   = Write2 f (f a (unsafeCoerce b))
-    mergeWrites _ _ = error "joinS: inconsistently versioned variable"
+    mergeWrites _ _ = error "joinS: inconsistently ver variable"

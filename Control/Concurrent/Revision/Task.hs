@@ -40,7 +40,6 @@ import qualified Data.IVar.Simple as IVar
 
 class Monad m => MonadTask m where
   type Task m :: * -> *
-
   -- | Fork a computation.
   --
   -- Both computations get independent copies of the versioned variables already in scope.
